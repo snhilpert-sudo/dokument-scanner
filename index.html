@@ -448,24 +448,51 @@ $fileInput.addEventListener('change', async e => {
   const files = Array.from(e.target.files);
   if (!files.length) return;
   for (const file of files) {
-    const dataUrl = await readFileAsDataUrl(file);
-    state.pages.push({ dataUrl, file });
+    const dataUrl = await preprocessImage(file);
+    state.pages.push({ dataUrl });
   }
   $fileInput.value = '';
   renderPages();
   showToast(`${files.length} Seite(n) hinzugefügt`, 'success');
 });
 
-function readFileAsDataUrl(file) {
-  return new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload = () => res(r.result);
-    r.onerror = rej;
-    r.readAsDataURL(file);
+// Bild aufbereiten: max 1600px, Kontrast erhöhen — gleich wie Kassenbuch
+function preprocessImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = ev => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const maxDim = 1600;
+        let w = img.width, h = img.height;
+        if (w > maxDim || h > maxDim) {
+          if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+          else { w = Math.round(w * maxDim / h); h = maxDim; }
+        }
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.filter = 'contrast(1.15) brightness(1.05)';
+        ctx.drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.92));
+      };
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
   });
 }
 
-// ── KI Analyse ─────────────────────────────────────────────────────────────
+// ── KI Analyse (gleiche Logik wie Kassenbuch) ──────────────────────────────
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-latest',
+  'gemini-1.5-flash-8b'
+];
+
 $analyseBtn.addEventListener('click', async () => {
   if (!state.pages.length) { showToast('Keine Seiten vorhanden', 'error'); return; }
   if (!cfg.gemini) { showToast('Bitte zuerst Gemini API-Key hinterlegen', 'error'); document.getElementById('settings-btn').click(); return; }
@@ -475,116 +502,82 @@ $analyseBtn.addEventListener('click', async () => {
   document.getElementById('analyse-label').textContent = 'Analyse läuft…';
 
   try {
-    // Use first page (+ up to 2 more) for analysis
-    const pagesToSend = state.pages.slice(0, 3);
-    const imageParts = pagesToSend.map(p => ({
-      inlineData: {
-        mimeType: p.dataUrl.split(';')[0].split(':')[1],
-        data: p.dataUrl.split(',')[1]
-      }
+    const imageParts = state.pages.slice(0, 3).map(p => ({
+      inlineData: { mimeType: 'image/jpeg', data: p.dataUrl.split(',')[1] }
     }));
 
     const today = new Date();
     const todayStr = `${String(today.getDate()).padStart(2,'0')}.${String(today.getMonth()+1).padStart(2,'0')}.${today.getFullYear()}`;
 
-    const prompt = `Analysiere dieses Dokument-Foto. Extrahiere diese Felder. Heute: ${todayStr}.
+    const prompt = `Analysiere dieses Dokument-Foto und extrahiere die Daten als JSON. Heute ist ${todayStr}.
 
-Antworte AUSSCHLIESSLICH mit diesem JSON-Format, keine anderen Zeichen davor oder danach:
-{"day":"TT","month":"MM","year":"JJ","sender":"Firma","desc":"Beschreibung","confidence":{"day":0.9,"month":0.9,"year":0.9,"sender":0.8,"desc":0.7}}
+Antworte NUR mit diesem JSON, ohne Markdown, ohne Erklaerung:
+{"day":"02","month":"07","year":"26","sender":"Mobiliar","desc":"Betriebsversicherung","confidence":{"day":0.9,"month":0.9,"year":0.9,"sender":0.9,"desc":0.8}}
 
 Regeln:
-- day: 2-stellig z.B. 02
-- month: 2-stellig z.B. 07
-- year: 2-stellig z.B. 26
-- sender: Nur Firmenname, kurz, keine Sonderzeichen, keine Anführungszeichen
-- desc: 1-2 Woerter ohne Sonderzeichen ohne Anführungszeichen z.B. Betriebsversicherung
-- Falls Datum unlesbar: heutiges Datum verwenden
-- confidence: 0.0 bis 1.0 pro Feld`;
+- day/month: immer 2-stellig
+- year: 2-stellig (z.B. 26 fuer 2026)
+- sender: Firmen- oder Personenname, kurz, keine Sonderzeichen
+- desc: 1-2 Woerter was das Dokument ist (z.B. Mietvertrag, Lohnausweis, Rechnung)
+- Falls Datum nicht erkennbar: heutiges Datum nutzen
+- confidence: 0.0 bis 1.0`;
 
-    const body = {
+    const reqBody = {
       contents: [{ parts: [...imageParts, { text: prompt }] }],
-      generationConfig: { temperature: 0.0, maxOutputTokens: 256, responseMimeType: 'application/json' }
+      generationConfig: { temperature: 0.0, maxOutputTokens: 300 }
     };
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${cfg.gemini}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
-    );
+    // Multi-Modell-Fallback: probiert der Reihe nach bis eines antwortet
+    let respData = null;
+    for (const model of GEMINI_MODELS) {
+      try {
+        const r = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cfg.gemini}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reqBody) }
+        );
+        if (r.ok) { respData = await r.json(); console.log('Gemini OK:', model); break; }
+        console.warn('Gemini', model, r.status);
+      } catch(e) { console.warn('Gemini', model, e.message); }
+    }
 
-    if (!res.ok) throw new Error(`Gemini Fehler: ${res.status}`);
-    const data = await res.json();
-    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    if (!respData) throw new Error('Kein Gemini-Modell verfuegbar — Key pruefen');
 
-    // Robust parsing: strip markdown fences, find first { ... } block
+    const raw = respData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    console.log('Gemini raw:', raw);
+
     let clean = raw.replace(/```json|```/gi, '').trim();
-    const jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) throw new Error('Keine gültigen Daten erkannt');
-    clean = jsonMatch[0];
-
-    // Sanitize: remove control characters that break JSON
-    clean = clean.replace(/[\x00-\x1F\x7F]/g, ' ');
+    const jsonMatch = clean.match(/\{[\s\S]*?\}/);
+    if (!jsonMatch) throw new Error('Kein JSON in Antwort gefunden');
+    clean = jsonMatch[0].replace(/[\x00-\x1F\x7F]/g, ' ');
 
     let parsed;
     try {
       parsed = JSON.parse(clean);
-    } catch(jsonErr) {
-      // Last resort: extract fields individually via regex
-      const extract = (key) => {
-        const m = clean.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*?)"`));
-        return m ? m[1].trim() : '';
-      };
-      parsed = {
-        day:    extract('day'),
-        month:  extract('month'),
-        year:   extract('year'),
-        sender: extract('sender'),
-        desc:   extract('desc'),
-        confidence: {}
-      };
+    } catch(e) {
+      const rx = k => { const m = clean.match(new RegExp('"' + k + '"\\s*:\\s*"([^"]*?)"')); return m ? m[1].trim() : ''; };
+      parsed = { day: rx('day'), month: rx('month'), year: rx('year'), sender: rx('sender'), desc: rx('desc'), confidence: {} };
     }
 
-    // Debug: show raw response keys in console
-    console.log('Gemini parsed:', JSON.stringify(parsed));
+    if (parsed.day)    fields.day.value    = String(parsed.day).padStart(2,'0');
+    if (parsed.month)  fields.month.value  = String(parsed.month).padStart(2,'0');
+    if (parsed.year)   fields.year.value   = String(parsed.year).slice(-2);
+    if (parsed.sender) fields.sender.value = parsed.sender;
+    if (parsed.desc)   fields.desc.value   = parsed.desc;
 
-    // Normalize: Gemini sometimes returns nested or differently named keys
-    const get = (obj, ...keys) => {
-      for (const k of keys) {
-        const v = obj?.[k];
-        if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
-      }
-      return '';
-    };
-
-    const day    = get(parsed, 'day', 'tag', 'Tag', 'DAY');
-    const month  = get(parsed, 'month', 'monat', 'Monat', 'MONTH');
-    const year   = get(parsed, 'year', 'jahr', 'Jahr', 'YEAR');
-    const sender = get(parsed, 'sender', 'absender', 'Absender', 'firma', 'Firma', 'SENDER');
-    const desc   = get(parsed, 'desc', 'beschreibung', 'Beschreibung', 'description', 'DESC');
-
-    // Always fill — even if empty string (user can see what came back)
-    fields.day.value    = day    || fields.day.value;
-    fields.month.value  = month  || fields.month.value;
-    fields.year.value   = year   || fields.year.value;
-    fields.sender.value = sender;
-    fields.desc.value   = desc;
-
-    // Badges
-    const conf = parsed.confidence || parsed.Confidence || {};
-    setBadge(badges.day,    conf.day    ?? conf.tag);
-    setBadge(badges.month,  conf.month  ?? conf.monat);
-    setBadge(badges.year,   conf.year   ?? conf.jahr);
-    setBadge(badges.sender, conf.sender ?? conf.absender);
-    setBadge(badges.desc,   conf.desc   ?? conf.beschreibung);
+    const conf = parsed.confidence || {};
+    setBadge(badges.day,    conf.day);
+    setBadge(badges.month,  conf.month);
+    setBadge(badges.year,   conf.year);
+    setBadge(badges.sender, conf.sender);
+    setBadge(badges.desc,   conf.desc);
 
     updateFilename();
-
-    // Show what was found (helps spot issues)
-    const found = [sender, desc, day+'.'+month+'.'+year].filter(Boolean).join(' · ');
-    showToast(found ? `✓ ${found}` : 'Analyse ok — Felder prüfen', found ? 'success' : 'info');
+    const found = [parsed.sender, parsed.desc].filter(Boolean).join(' · ');
+    showToast(found ? `✓ ${found}` : 'Analyse fertig — Felder pruefen', 'success');
 
   } catch(err) {
     console.error(err);
-    showToast('Analyse fehlgeschlagen: ' + err.message, 'error', 5000);
+    showToast('KI Fehler: ' + err.message, 'error', 5000);
   } finally {
     $analyseBtn.disabled = false;
     document.getElementById('analyse-icon').textContent = '✨';
