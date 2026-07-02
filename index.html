@@ -543,23 +543,44 @@ Regeln:
       };
     }
 
-    // Fill fields
-    if (parsed.day)    fields.day.value    = parsed.day;
-    if (parsed.month)  fields.month.value  = parsed.month;
-    if (parsed.year)   fields.year.value   = parsed.year;
-    if (parsed.sender) fields.sender.value = parsed.sender;
-    if (parsed.desc)   fields.desc.value   = parsed.desc;
+    // Debug: show raw response keys in console
+    console.log('Gemini parsed:', JSON.stringify(parsed));
+
+    // Normalize: Gemini sometimes returns nested or differently named keys
+    const get = (obj, ...keys) => {
+      for (const k of keys) {
+        const v = obj?.[k];
+        if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+      }
+      return '';
+    };
+
+    const day    = get(parsed, 'day', 'tag', 'Tag', 'DAY');
+    const month  = get(parsed, 'month', 'monat', 'Monat', 'MONTH');
+    const year   = get(parsed, 'year', 'jahr', 'Jahr', 'YEAR');
+    const sender = get(parsed, 'sender', 'absender', 'Absender', 'firma', 'Firma', 'SENDER');
+    const desc   = get(parsed, 'desc', 'beschreibung', 'Beschreibung', 'description', 'DESC');
+
+    // Always fill — even if empty string (user can see what came back)
+    fields.day.value    = day    || fields.day.value;
+    fields.month.value  = month  || fields.month.value;
+    fields.year.value   = year   || fields.year.value;
+    fields.sender.value = sender;
+    fields.desc.value   = desc;
 
     // Badges
-    const conf = parsed.confidence || {};
-    setBadge(badges.day,    conf.day);
-    setBadge(badges.month,  conf.month);
-    setBadge(badges.year,   conf.year);
-    setBadge(badges.sender, conf.sender);
-    setBadge(badges.desc,   conf.desc);
+    const conf = parsed.confidence || parsed.Confidence || {};
+    setBadge(badges.day,    conf.day    ?? conf.tag);
+    setBadge(badges.month,  conf.month  ?? conf.monat);
+    setBadge(badges.year,   conf.year   ?? conf.jahr);
+    setBadge(badges.sender, conf.sender ?? conf.absender);
+    setBadge(badges.desc,   conf.desc   ?? conf.beschreibung);
 
     updateFilename();
-    showToast('KI-Analyse abgeschlossen ✓', 'success');
+
+    // Show what was found (helps spot issues)
+    const found = [sender, desc, day+'.'+month+'.'+year].filter(Boolean).join(' · ');
+    showToast(found ? `✓ ${found}` : 'Analyse ok — Felder prüfen', found ? 'success' : 'info');
 
   } catch(err) {
     console.error(err);
