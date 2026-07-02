@@ -485,13 +485,15 @@ function preprocessImage(file) {
 }
 
 // ── KI Analyse (1:1 aus Kassenbuch) ──────────────────────────────────────
-const GEMINI_KEY = cfg.gemini;
+
 const GEMINI_MODELS = ['gemini-2.5-flash','gemini-2.5-flash-preview-05-20','gemini-3.0-flash','gemini-2.0-flash','gemini-1.5-flash'];
 
 $analyseBtn.addEventListener('click', async () => {
   if (!state.pages.length) { showToast('Keine Seiten vorhanden', 'error'); return; }
   const key = cfg.gemini;
+  console.log('Key geladen:', key ? key.slice(0,8) + '...' : 'LEER');
   if (!key) { showToast('Bitte zuerst Gemini API-Key hinterlegen', 'error'); document.getElementById('settings-btn').click(); return; }
+  showToast('Verbinde mit Gemini…', 'info', 60000);
 
   $analyseBtn.disabled = true;
   document.getElementById('analyse-icon').innerHTML = '<div class="spinner"></div>';
