@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="DokScan">
+<meta name="theme-color" content="#0f1117">
+<title>Dokument Scanner</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22263a;
+    --border: #2e334d;
+    --text: #eeedf0;
+    --muted: #7b82a0;
+    --amber: #e8a020;
+    --amber-dim: #3d2c08;
+    --green: #22c55e;
+    --green-dim: #0d2e1a;
+    --red: #ef4444;
+    --red-dim: #2d1010;
+    --blue: #3b82f6;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bot: env(safe-area-inset-bottom, 0px);
+  }
+
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; }
+
+  /* ── Layout ── */
+  #app { display: flex; flex-direction: column; height: 100dvh; padding-top: var(--safe-top); }
+
+  header {
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
+  header p { font-size: 12px; color: var(--muted); margin-top: 2px; }
+
+  /* ── Settings overlay ── */
+  #settings-btn {
+    position: absolute; top: calc(var(--safe-top) + 14px); right: 16px;
+    background: none; border: none; color: var(--muted); font-size: 22px; cursor: pointer; padding: 4px;
+  }
+
+  #settings-overlay {
+    display: none; position: fixed; inset: 0; z-index: 100;
+    background: rgba(0,0,0,0.7); backdrop-filter: blur(4px);
+    align-items: flex-end;
+  }
+  #settings-overlay.open { display: flex; }
+  #settings-sheet {
+    background: var(--surface); border-radius: 20px 20px 0 0;
+    padding: 20px 20px calc(20px + var(--safe-bot));
+    width: 100%; border-top: 1px solid var(--border);
+  }
+  #settings-sheet h2 { font-size: 16px; font-weight: 600; margin-bottom: 16px; }
+  .setting-row { margin-bottom: 14px; }
+  .setting-row label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 6px; }
+  .setting-row input {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 10px; padding: 10px 14px; font-size: 14px;
+  }
+  .setting-row input::placeholder { color: var(--muted); }
+  #save-settings {
+    width: 100%; background: var(--amber); color: #000; border: none;
+    border-radius: 12px; padding: 14px; font-size: 15px; font-weight: 600;
+    cursor: pointer; margin-top: 4px;
+  }
+  #close-settings {
+    width: 100%; background: none; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 12px; padding: 12px; font-size: 14px;
+    cursor: pointer; margin-top: 8px;
+  }
+
+  /* ── Scroll area ── */
+  #main {
+    flex: 1; overflow-y: auto; overflow-x: hidden;
+    padding: 16px 16px calc(16px + var(--safe-bot));
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* ── Pages grid ── */
+  #pages-section { margin-bottom: 20px; }
+  #pages-label { font-size: 12px; color: var(--muted); margin-bottom: 10px; font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase; }
+  #pages-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+  }
+
+  .page-thumb {
+    position: relative; border-radius: 10px; overflow: hidden;
+    aspect-ratio: 3/4; background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .page-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .page-thumb .pg-num {
+    position: absolute; bottom: 4px; left: 6px;
+    font-size: 10px; font-weight: 600; color: #fff;
+    background: rgba(0,0,0,0.6); border-radius: 4px; padding: 1px 5px;
+  }
+  .page-thumb .pg-del {
+    position: absolute; top: 4px; right: 4px;
+    background: rgba(0,0,0,0.6); border: none; color: #fff;
+    border-radius: 50%; width: 22px; height: 22px; font-size: 13px;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    line-height: 1;
+  }
+
+  /* Add page button */
+  #add-page-btn {
+    aspect-ratio: 3/4; border-radius: 10px;
+    border: 2px dashed var(--border); background: none;
+    color: var(--muted); font-size: 28px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 4px; transition: border-color 0.2s;
+  }
+  #add-page-btn span { font-size: 11px; font-weight: 500; }
+  #add-page-btn:active { border-color: var(--amber); color: var(--amber); }
+
+  /* ── KI Section ── */
+  #ki-section {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 14px; padding: 16px; margin-bottom: 16px;
+  }
+  #ki-section h2 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--muted); letter-spacing: 0.3px; }
+
+  .field-row { margin-bottom: 12px; }
+  .field-row label { font-size: 11px; color: var(--muted); display: block; margin-bottom: 5px; font-weight: 500; letter-spacing: 0.4px; text-transform: uppercase; }
+  .field-row input {
+    width: 100%; background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 10px; padding: 10px 12px; font-size: 15px;
+    font-weight: 500; transition: border-color 0.2s;
+  }
+  .field-row input:focus { outline: none; border-color: var(--amber); }
+  .field-row input::placeholder { color: var(--muted); font-weight: 400; }
+
+  /* Date row split */
+  .date-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .date-row input { text-align: center; padding: 10px 4px; }
+
+  /* Filename preview */
+  #filename-preview {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 10px 12px; margin-top: 4px;
+  }
+  #filename-preview .label { font-size: 10px; color: var(--muted); margin-bottom: 4px; font-weight: 500; letter-spacing: 0.4px; text-transform: uppercase; }
+  #filename-preview .name {
+    font-family: 'SF Mono', 'Fira Mono', monospace; font-size: 13px;
+    color: var(--amber); word-break: break-all; line-height: 1.4;
+  }
+
+  /* ── KI Analyse btn ── */
+  #analyse-btn {
+    width: 100%; border: 1px solid var(--amber); background: var(--amber-dim);
+    color: var(--amber); border-radius: 12px; padding: 12px;
+    font-size: 14px; font-weight: 600; cursor: pointer; margin-bottom: 16px;
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: background 0.2s;
+  }
+  #analyse-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  #analyse-btn:not(:disabled):active { background: #5a3d0e; }
+
+  /* Confidence badge */
+  .badge {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    border-radius: 5px; padding: 1px 6px; margin-left: 6px; vertical-align: middle;
+  }
+  .badge-high { background: var(--green-dim); color: var(--green); }
+  .badge-mid  { background: var(--amber-dim); color: var(--amber); }
+  .badge-low  { background: var(--red-dim); color: var(--red); }
+
+  /* ── Action buttons ── */
+  #action-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+
+  .action-btn {
+    border-radius: 12px; padding: 14px 10px; font-size: 14px; font-weight: 600;
+    cursor: pointer; border: none; display: flex; align-items: center;
+    justify-content: center; gap: 6px; transition: opacity 0.2s;
+  }
+  .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .action-btn:not(:disabled):active { opacity: 0.75; }
+
+  #pdf-btn { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  #onedrive-btn { background: #0078d4; color: #fff; }
+
+  /* ── Reset btn ── */
+  #reset-btn {
+    width: 100%; background: none; border: 1px solid var(--border);
+    color: var(--muted); border-radius: 12px; padding: 12px;
+    font-size: 14px; cursor: pointer;
+  }
+
+  /* ── Status toast ── */
+  #toast {
+    position: fixed; bottom: calc(20px + var(--safe-bot)); left: 50%;
+    transform: translateX(-50%) translateY(80px);
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 12px; padding: 10px 18px;
+    font-size: 13px; font-weight: 500; white-space: nowrap;
+    transition: transform 0.3s ease; z-index: 200; pointer-events: none;
+    max-width: calc(100vw - 40px);
+  }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #toast.success { border-color: var(--green); color: var(--green); }
+  #toast.error   { border-color: var(--red); color: var(--red); }
+  #toast.info    { border-color: var(--amber); color: var(--amber); }
+
+  /* ── Spinner ── */
+  .spinner {
+    width: 16px; height: 16px; border: 2px solid currentColor;
+    border-top-color: transparent; border-radius: 50%;
+    animation: spin 0.7s linear infinite; flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Empty state */
+  #empty-state {
+    text-align: center; padding: 32px 20px; color: var(--muted);
+  }
+  #empty-state .icon { font-size: 48px; margin-bottom: 12px; }
+  #empty-state p { font-size: 14px; line-height: 1.5; }
+
+  /* Hidden file input */
+  #file-input { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <h1>📄 Dokument Scanner</h1>
+    <p>Fotografieren → KI erkennt → PDF in OneDrive</p>
+    <button id="settings-btn" aria-label="Einstellungen">⚙️</button>
+  </header>
+
+  <!-- Settings overlay -->
+  <div id="settings-overlay" role="dialog" aria-modal="true" aria-label="Einstellungen">
+    <div id="settings-sheet">
+      <h2>⚙️ Einstellungen</h2>
+      <div class="setting-row">
+        <label>Gemini API-Key</label>
+        <input type="password" id="cfg-gemini" placeholder="AIza…">
+      </div>
+      <div class="setting-row">
+        <label>OneDrive-Ordner (Pfad)</label>
+        <input type="text" id="cfg-folder" placeholder="Dokumente/Scans">
+      </div>
+      <div class="setting-row">
+        <label>Microsoft Client-ID (Azure App)</label>
+        <input type="text" id="cfg-clientid" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+      </div>
+      <button id="save-settings">Speichern</button>
+      <button id="close-settings">Abbrechen</button>
+    </div>
+  </div>
+
+  <div id="main">
+
+    <!-- Pages -->
+    <div id="pages-section">
+      <div id="pages-label">SEITEN <span id="page-count" style="color:var(--amber)">0</span></div>
+      <div id="pages-grid">
+        <button id="add-page-btn" aria-label="Seite hinzufügen">
+          <span style="font-size:32px">+</span>
+          <span>Seite</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="empty-state">
+      <div class="icon">📷</div>
+      <p>Tippe auf <strong>+</strong> um die erste Seite zu fotografieren oder aus der Galerie zu wählen.</p>
+    </div>
+
+    <!-- KI & Felder -->
+    <div id="ki-section" style="display:none">
+      <h2>DOKUMENTDATEN</h2>
+
+      <button id="analyse-btn">
+        <span id="analyse-icon">✨</span>
+        <span id="analyse-label">KI-Analyse starten</span>
+      </button>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:12px">
+        <div class="field-row" style="margin:0">
+          <label>TAG <span id="badge-day"></span></label>
+          <input type="text" id="f-day" placeholder="02" maxlength="2">
+        </div>
+        <div class="field-row" style="margin:0">
+          <label>MONAT <span id="badge-month"></span></label>
+          <input type="text" id="f-month" placeholder="07" maxlength="2">
+        </div>
+      </div>
+      <div class="field-row" style="margin-bottom:12px">
+        <label>JAHR <span id="badge-year"></span></label>
+        <input type="text" id="f-year" placeholder="26" maxlength="2">
+      </div>
+
+      <div class="field-row">
+        <label>ABSENDER <span id="badge-sender"></span></label>
+        <input type="text" id="f-sender" placeholder="z.B. Mobiliar">
+      </div>
+
+      <div class="field-row">
+        <label>BESCHREIBUNG <span id="badge-desc"></span></label>
+        <input type="text" id="f-desc" placeholder="z.B. Betriebsversicherung">
+      </div>
+
+      <div id="filename-preview">
+        <div class="label">DATEINAME</div>
+        <div class="name" id="filename-out">––</div>
+      </div>
+    </div>
+
+    <!-- Actions -->
+    <div id="action-row" style="display:none">
+      <button class="action-btn" id="pdf-btn">⬇ PDF laden</button>
+      <button class="action-btn" id="onedrive-btn">☁ OneDrive</button>
+    </div>
+    <button id="reset-btn" style="display:none">↺ Neu starten</button>
+
+    <div style="height:8px"></div>
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<input type="file" id="file-input" accept="image/*" capture="environment" multiple>
+<div id="toast"></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+const state = {
+  pages: [],       // { dataUrl, file }
+  fields: { day:'', month:'', year:'', sender:'', desc:'' }
+};
+
+// ── Config (localStorage) ──────────────────────────────────────────────────
+const cfg = {
+  get gemini()   { return localStorage.getItem('ds_gemini') || ''; },
+  get folder()   { return localStorage.getItem('ds_folder') || 'Dokumente/Scans'; },
+  get clientId() { return localStorage.getItem('ds_clientid') || ''; },
+  set gemini(v)  { localStorage.setItem('ds_gemini', v); },
+  set folder(v)  { localStorage.setItem('ds_folder', v); },
+  set clientId(v){ localStorage.setItem('ds_clientid', v); }
+};
+
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const $grid      = document.getElementById('pages-grid');
+const $addBtn    = document.getElementById('add-page-btn');
+const $fileInput = document.getElementById('file-input');
+const $kiSec     = document.getElementById('ki-section');
+const $actionRow = document.getElementById('action-row');
+const $resetBtn  = document.getElementById('reset-btn');
+const $empty     = document.getElementById('empty-state');
+const $pageCount = document.getElementById('page-count');
+const $analyseBtn= document.getElementById('analyse-btn');
+const $toast     = document.getElementById('toast');
+const $filenameOut = document.getElementById('filename-out');
+
+// Field inputs
+const fields = {
+  day:    document.getElementById('f-day'),
+  month:  document.getElementById('f-month'),
+  year:   document.getElementById('f-year'),
+  sender: document.getElementById('f-sender'),
+  desc:   document.getElementById('f-desc'),
+};
+const badges = {
+  day:    document.getElementById('badge-day'),
+  month:  document.getElementById('badge-month'),
+  year:   document.getElementById('badge-year'),
+  sender: document.getElementById('badge-sender'),
+  desc:   document.getElementById('badge-desc'),
+};
+
+// ── Toast ──────────────────────────────────────────────────────────────────
+let toastTimer;
+function showToast(msg, type = '', dur = 3000) {
+  clearTimeout(toastTimer);
+  $toast.textContent = msg;
+  $toast.className = 'show ' + type;
+  toastTimer = setTimeout(() => { $toast.className = ''; }, dur);
+}
+
+// ── Filename preview ───────────────────────────────────────────────────────
+function updateFilename() {
+  const d = fields.day.value.trim().padStart(2,'0');
+  const m = fields.month.value.trim().padStart(2,'0');
+  const y = fields.year.value.trim().replace(/^20/,'').padStart(2,'0');
+  const s = (fields.sender.value.trim() || '').replace(/\s+/g,'');
+  const desc = (fields.desc.value.trim() || '').replace(/\s+/g,'');
+  const parts = [y+m+d, s, desc].filter(Boolean);
+  $filenameOut.textContent = parts.length ? parts.join('_') + '.pdf' : '––';
+}
+Object.values(fields).forEach(el => el.addEventListener('input', updateFilename));
+
+function getFilename() {
+  const d = fields.day.value.trim().padStart(2,'0');
+  const m = fields.month.value.trim().padStart(2,'0');
+  const y = fields.year.value.trim().replace(/^20/,'').padStart(2,'0');
+  const s = (fields.sender.value.trim() || 'Absender').replace(/\s+/g,'');
+  const desc = (fields.desc.value.trim() || 'Dokument').replace(/\s+/g,'');
+  return `${y}${m}${d}_${s}_${desc}.pdf`;
+}
+
+// ── Badge helper ───────────────────────────────────────────────────────────
+function setBadge(el, conf) {
+  if (!conf) { el.textContent = ''; return; }
+  const cls = conf >= 0.85 ? 'badge-high' : conf >= 0.6 ? 'badge-mid' : 'badge-low';
+  const label = conf >= 0.85 ? 'sicher' : conf >= 0.6 ? 'unsicher' : 'unklar';
+  el.innerHTML = `<span class="badge ${cls}">${label}</span>`;
+}
+
+// ── Render pages ───────────────────────────────────────────────────────────
+function renderPages() {
+  // Remove existing thumbs (keep add-btn)
+  $grid.querySelectorAll('.page-thumb').forEach(el => el.remove());
+
+  state.pages.forEach((p, i) => {
+    const div = document.createElement('div');
+    div.className = 'page-thumb';
+    div.innerHTML = `
+      <img src="${p.dataUrl}" alt="Seite ${i+1}">
+      <span class="pg-num">${i+1}</span>
+      <button class="pg-del" data-i="${i}" aria-label="Seite löschen">×</button>
+    `;
+    $grid.insertBefore(div, $addBtn);
+  });
+
+  $pageCount.textContent = state.pages.length;
+  $empty.style.display = state.pages.length ? 'none' : 'block';
+  $kiSec.style.display = state.pages.length ? 'block' : 'none';
+  $actionRow.style.display = state.pages.length ? 'grid' : 'none';
+  $resetBtn.style.display = state.pages.length ? 'block' : 'none';
+}
+
+// Delete page
+$grid.addEventListener('click', e => {
+  const btn = e.target.closest('.pg-del');
+  if (!btn) return;
+  const i = parseInt(btn.dataset.i);
+  state.pages.splice(i, 1);
+  renderPages();
+});
+
+// ── Add pages ──────────────────────────────────────────────────────────────
+$addBtn.addEventListener('click', () => $fileInput.click());
+
+$fileInput.addEventListener('change', async e => {
+  const files = Array.from(e.target.files);
+  if (!files.length) return;
+  for (const file of files) {
+    const dataUrl = await readFileAsDataUrl(file);
+    state.pages.push({ dataUrl, file });
+  }
+  $fileInput.value = '';
+  renderPages();
+  showToast(`${files.length} Seite(n) hinzugefügt`, 'success');
+});
+
+function readFileAsDataUrl(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+// ── KI Analyse ─────────────────────────────────────────────────────────────
+$analyseBtn.addEventListener('click', async () => {
+  if (!state.pages.length) { showToast('Keine Seiten vorhanden', 'error'); return; }
+  if (!cfg.gemini) { showToast('Bitte zuerst Gemini API-Key hinterlegen', 'error'); document.getElementById('settings-btn').click(); return; }
+
+  $analyseBtn.disabled = true;
+  document.getElementById('analyse-icon').innerHTML = '<div class="spinner"></div>';
+  document.getElementById('analyse-label').textContent = 'Analyse läuft…';
+
+  try {
+    // Use first page (+ up to 2 more) for analysis
+    const pagesToSend = state.pages.slice(0, 3);
+    const imageParts = pagesToSend.map(p => ({
+      inlineData: {
+        mimeType: p.dataUrl.split(';')[0].split(':')[1],
+        data: p.dataUrl.split(',')[1]
+      }
+    }));
+
+    const today = new Date();
+    const todayStr = `${String(today.getDate()).padStart(2,'0')}.${String(today.getMonth()+1).padStart(2,'0')}.${today.getFullYear()}`;
+
+    const prompt = `Du analysierst ein Dokument (Foto). Extrahiere folgende Felder als JSON.
+Heute ist ${todayStr}. Falls kein Datum erkennbar, nutze das heutige Datum.
+
+Felder:
+- day: Tag als 2-stellige Zahl (z.B. "02")
+- month: Monat als 2-stellige Zahl (z.B. "07")
+- year: Jahr als 2-stellige Zahl (z.B. "26" für 2026)
+- sender: Absender / Aussteller / Firma / Organisation (kurz, ohne Rechtsform)
+- desc: Kurze Beschreibung des Dokuments (1-2 Wörter, zusammengeschrieben, z.B. "Betriebsversicherung", "Mietvertrag", "Lohnausweis")
+- confidence: Objekt mit Konfidenzwerten 0.0-1.0 für jedes Feld
+
+Antworte NUR mit gültigem JSON, kein Markdown, keine Erklärung:
+{"day":"","month":"","year":"","sender":"","desc":"","confidence":{"day":0.9,"month":0.9,"year":0.9,"sender":0.8,"desc":0.7}}`;
+
+    const body = {
+      contents: [{ parts: [...imageParts, { text: prompt }] }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 512 }
+    };
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${cfg.gemini}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+    );
+
+    if (!res.ok) throw new Error(`Gemini Fehler: ${res.status}`);
+    const data = await res.json();
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+    const clean = raw.replace(/```json|```/g, '').trim();
+    const parsed = JSON.parse(clean);
+
+    // Fill fields
+    if (parsed.day)    fields.day.value    = parsed.day;
+    if (parsed.month)  fields.month.value  = parsed.month;
+    if (parsed.year)   fields.year.value   = parsed.year;
+    if (parsed.sender) fields.sender.value = parsed.sender;
+    if (parsed.desc)   fields.desc.value   = parsed.desc;
+
+    // Badges
+    const conf = parsed.confidence || {};
+    setBadge(badges.day,    conf.day);
+    setBadge(badges.month,  conf.month);
+    setBadge(badges.year,   conf.year);
+    setBadge(badges.sender, conf.sender);
+    setBadge(badges.desc,   conf.desc);
+
+    updateFilename();
+    showToast('KI-Analyse abgeschlossen ✓', 'success');
+
+  } catch(err) {
+    console.error(err);
+    showToast('Analyse fehlgeschlagen: ' + err.message, 'error', 5000);
+  } finally {
+    $analyseBtn.disabled = false;
+    document.getElementById('analyse-icon').textContent = '✨';
+    document.getElementById('analyse-label').textContent = 'KI-Analyse wiederholen';
+  }
+});
+
+// ── PDF erstellen ──────────────────────────────────────────────────────────
+async function buildPdf() {
+  const { jsPDF } = window.jspdf;
+  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const W = 210, H = 297;
+
+  for (let i = 0; i < state.pages.length; i++) {
+    if (i > 0) pdf.addPage();
+    const img = new Image();
+    await new Promise((res, rej) => {
+      img.onload = res; img.onerror = rej;
+      img.src = state.pages[i].dataUrl;
+    });
+    // Scale to fit A4 preserving aspect ratio
+    const ratio = Math.min(W / img.naturalWidth, H / img.naturalHeight);
+    const w = img.naturalWidth * ratio;
+    const h = img.naturalHeight * ratio;
+    const x = (W - w) / 2;
+    const y = (H - h) / 2;
+    const fmt = state.pages[i].dataUrl.split(';')[0].split('/')[1].toUpperCase();
+    pdf.addImage(state.pages[i].dataUrl, fmt === 'JPG' ? 'JPEG' : fmt, x, y, w, h);
+  }
+  return pdf;
+}
+
+// ── Download PDF ───────────────────────────────────────────────────────────
+document.getElementById('pdf-btn').addEventListener('click', async () => {
+  if (!state.pages.length) { showToast('Keine Seiten vorhanden', 'error'); return; }
+  const btn = document.getElementById('pdf-btn');
+  btn.disabled = true;
+  btn.textContent = '…';
+  try {
+    const pdf = await buildPdf();
+    pdf.save(getFilename());
+    showToast('PDF gespeichert ✓', 'success');
+  } catch(e) {
+    showToast('PDF-Fehler: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬇ PDF laden';
+  }
+});
+
+// ── OneDrive Upload via MSAL implicit / token ──────────────────────────────
+let msToken = null;
+
+async function getMsToken() {
+  if (msToken) return msToken;
+  const clientId = cfg.clientId;
+  if (!clientId) throw new Error('Microsoft Client-ID fehlt in Einstellungen');
+
+  const redirectUri = encodeURIComponent(location.href.split('?')[0].split('#')[0]);
+  const scope = encodeURIComponent('Files.ReadWrite offline_access');
+  const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&response_type=token&redirect_uri=${redirectUri}&scope=${scope}&response_mode=fragment`;
+
+  // Check if we already have a token in the URL hash (redirect return)
+  const hash = new URLSearchParams(location.hash.slice(1));
+  if (hash.get('access_token')) {
+    msToken = hash.get('access_token');
+    history.replaceState(null, '', location.pathname);
+    return msToken;
+  }
+
+  // Open popup for auth
+  return new Promise((resolve, reject) => {
+    const popup = window.open(authUrl, 'ms-auth', 'width=480,height=640');
+    if (!popup) { reject(new Error('Popup wurde blockiert. Bitte Popup-Blocker deaktivieren.')); return; }
+
+    const timer = setInterval(() => {
+      try {
+        const popHash = new URLSearchParams(popup.location.hash.slice(1));
+        const token = popHash.get('access_token');
+        if (token) {
+          clearInterval(timer);
+          popup.close();
+          msToken = token;
+          resolve(token);
+        }
+      } catch(e) { /* cross-origin, warten */ }
+      if (popup.closed) { clearInterval(timer); reject(new Error('Login abgebrochen')); }
+    }, 500);
+  });
+}
+
+document.getElementById('onedrive-btn').addEventListener('click', async () => {
+  if (!state.pages.length) { showToast('Keine Seiten vorhanden', 'error'); return; }
+  const btn = document.getElementById('onedrive-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner" style="border-color:#fff;border-top-color:transparent"></div> Verbinde…';
+
+  try {
+    const token = await getMsToken();
+    showToast('Erstelle PDF…', 'info', 30000);
+    btn.innerHTML = '<div class="spinner" style="border-color:#fff;border-top-color:transparent"></div> PDF…';
+
+    const pdf = await buildPdf();
+    const pdfBlob = pdf.output('blob');
+
+    const filename = getFilename();
+    const folder = cfg.folder.replace(/^\/|\/$/g,'');
+    const uploadPath = folder ? `${folder}/${filename}` : filename;
+
+    showToast('Lade hoch…', 'info', 30000);
+    btn.innerHTML = '<div class="spinner" style="border-color:#fff;border-top-color:transparent"></div> Hochladen…';
+
+    const uploadUrl = `https://graph.microsoft.com/v1.0/me/drive/root:/${uploadPath}:/content`;
+    const upRes = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/pdf'
+      },
+      body: pdfBlob
+    });
+
+    if (!upRes.ok) {
+      const errData = await upRes.json().catch(() => ({}));
+      throw new Error(errData?.error?.message || `HTTP ${upRes.status}`);
+    }
+
+    const result = await upRes.json();
+    showToast(`✓ Gespeichert: ${filename}`, 'success', 5000);
+
+  } catch(e) {
+    console.error(e);
+    if (e.message.includes('401') || e.message.includes('token')) msToken = null;
+    showToast('Fehler: ' + e.message, 'error', 6000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '☁ OneDrive';
+  }
+});
+
+// ── Reset ──────────────────────────────────────────────────────────────────
+$resetBtn.addEventListener('click', () => {
+  if (!confirm('Alle Seiten und Felder löschen?')) return;
+  state.pages = [];
+  Object.values(fields).forEach(el => el.value = '');
+  Object.values(badges).forEach(el => el.textContent = '');
+  updateFilename();
+  renderPages();
+  showToast('Zurückgesetzt', '');
+});
+
+// ── Settings ───────────────────────────────────────────────────────────────
+const $overlay = document.getElementById('settings-overlay');
+document.getElementById('settings-btn').addEventListener('click', () => {
+  document.getElementById('cfg-gemini').value   = cfg.gemini;
+  document.getElementById('cfg-folder').value   = cfg.folder;
+  document.getElementById('cfg-clientid').value = cfg.clientId;
+  $overlay.classList.add('open');
+});
+document.getElementById('close-settings').addEventListener('click', () => $overlay.classList.remove('open'));
+$overlay.addEventListener('click', e => { if (e.target === $overlay) $overlay.classList.remove('open'); });
+document.getElementById('save-settings').addEventListener('click', () => {
+  cfg.gemini   = document.getElementById('cfg-gemini').value.trim();
+  cfg.folder   = document.getElementById('cfg-folder').value.trim();
+  cfg.clientId = document.getElementById('cfg-clientid').value.trim();
+  $overlay.classList.remove('open');
+  showToast('Einstellungen gespeichert ✓', 'success');
+});
+
+// ── Service Worker ─────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(console.error);
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────
+renderPages();
+updateFilename();
+
+// Pre-fill today's date
+const now = new Date();
+if (!fields.day.value) {
+  fields.day.value   = String(now.getDate()).padStart(2,'0');
+  fields.month.value = String(now.getMonth()+1).padStart(2,'0');
+  fields.year.value  = String(now.getFullYear()).slice(-2);
+  updateFilename();
+}
+</script>
+</body>
+</html>
