@@ -529,6 +529,8 @@ Regeln:
 
     // Multi-Modell-Fallback: probiert der Reihe nach bis eines antwortet
     let respData = null;
+    let lastStatus = '';
+    let lastError = '';
     for (const model of GEMINI_MODELS) {
       try {
         const r = await fetch(
@@ -536,11 +538,24 @@ Regeln:
           { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reqBody) }
         );
         if (r.ok) { respData = await r.json(); console.log('Gemini OK:', model); break; }
-        console.warn('Gemini', model, r.status);
-      } catch(e) { console.warn('Gemini', model, e.message); }
+        lastStatus = r.status;
+        const errBody = await r.json().catch(() => ({}));
+        lastError = errBody?.error?.message || '';
+        console.warn('Gemini', model, r.status, lastError);
+      } catch(e) {
+        lastError = e.message;
+        console.warn('Gemini', model, e.message);
+      }
     }
 
-    if (!respData) throw new Error('Kein Gemini-Modell verfuegbar — Key pruefen');
+    if (!respData) {
+      const hint = lastStatus === 400 ? 'Ungültige Anfrage (400)' :
+                   lastStatus === 401 || lastStatus === 403 ? 'API-Key ungültig oder abgelaufen' :
+                   lastStatus === 429 ? 'Zu viele Anfragen — kurz warten' :
+                   lastStatus === 503 ? 'Gemini überlastet — nochmals versuchen' :
+                   lastError || `HTTP ${lastStatus}`;
+      throw new Error(hint);
+    }
 
     const raw = respData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
     console.log('Gemini raw:', raw);
