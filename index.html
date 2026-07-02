@@ -487,23 +487,23 @@ $analyseBtn.addEventListener('click', async () => {
     const today = new Date();
     const todayStr = `${String(today.getDate()).padStart(2,'0')}.${String(today.getMonth()+1).padStart(2,'0')}.${today.getFullYear()}`;
 
-    const prompt = `Du analysierst ein Dokument (Foto). Extrahiere folgende Felder als JSON.
-Heute ist ${todayStr}. Falls kein Datum erkennbar, nutze das heutige Datum.
+    const prompt = `Analysiere dieses Dokument-Foto. Extrahiere diese Felder. Heute: ${todayStr}.
 
-Felder:
-- day: Tag als 2-stellige Zahl (z.B. "02")
-- month: Monat als 2-stellige Zahl (z.B. "07")
-- year: Jahr als 2-stellige Zahl (z.B. "26" für 2026)
-- sender: Absender / Aussteller / Firma / Organisation (kurz, ohne Rechtsform)
-- desc: Kurze Beschreibung des Dokuments (1-2 Wörter, zusammengeschrieben, z.B. "Betriebsversicherung", "Mietvertrag", "Lohnausweis")
-- confidence: Objekt mit Konfidenzwerten 0.0-1.0 für jedes Feld
+Antworte AUSSCHLIESSLICH mit diesem JSON-Format, keine anderen Zeichen davor oder danach:
+{"day":"TT","month":"MM","year":"JJ","sender":"Firma","desc":"Beschreibung","confidence":{"day":0.9,"month":0.9,"year":0.9,"sender":0.8,"desc":0.7}}
 
-Antworte NUR mit gültigem JSON, kein Markdown, keine Erklärung:
-{"day":"","month":"","year":"","sender":"","desc":"","confidence":{"day":0.9,"month":0.9,"year":0.9,"sender":0.8,"desc":0.7}}`;
+Regeln:
+- day: 2-stellig z.B. 02
+- month: 2-stellig z.B. 07
+- year: 2-stellig z.B. 26
+- sender: Nur Firmenname, kurz, keine Sonderzeichen, keine Anführungszeichen
+- desc: 1-2 Woerter ohne Sonderzeichen ohne Anführungszeichen z.B. Betriebsversicherung
+- Falls Datum unlesbar: heutiges Datum verwenden
+- confidence: 0.0 bis 1.0 pro Feld`;
 
     const body = {
       contents: [{ parts: [...imageParts, { text: prompt }] }],
-      generationConfig: { temperature: 0.1, maxOutputTokens: 512 }
+      generationConfig: { temperature: 0.0, maxOutputTokens: 256, responseMimeType: 'application/json' }
     };
 
     const res = await fetch(
@@ -514,8 +514,34 @@ Antworte NUR mit gültigem JSON, kein Markdown, keine Erklärung:
     if (!res.ok) throw new Error(`Gemini Fehler: ${res.status}`);
     const data = await res.json();
     const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-    const clean = raw.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
+
+    // Robust parsing: strip markdown fences, find first { ... } block
+    let clean = raw.replace(/```json|```/gi, '').trim();
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('Keine gültigen Daten erkannt');
+    clean = jsonMatch[0];
+
+    // Sanitize: remove control characters that break JSON
+    clean = clean.replace(/[\x00-\x1F\x7F]/g, ' ');
+
+    let parsed;
+    try {
+      parsed = JSON.parse(clean);
+    } catch(jsonErr) {
+      // Last resort: extract fields individually via regex
+      const extract = (key) => {
+        const m = clean.match(new RegExp(`"${key}"\\s*:\\s*"([^"]*?)"`));
+        return m ? m[1].trim() : '';
+      };
+      parsed = {
+        day:    extract('day'),
+        month:  extract('month'),
+        year:   extract('year'),
+        sender: extract('sender'),
+        desc:   extract('desc'),
+        confidence: {}
+      };
+    }
 
     // Fill fields
     if (parsed.day)    fields.day.value    = parsed.day;
