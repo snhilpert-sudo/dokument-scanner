@@ -202,7 +202,7 @@
   }
 
   /* ── Status toast ── */
-  #toast {
+  #toast {max-width: calc(100vw - 40px); white-space: normal; text-align: center;
     position: fixed; bottom: calc(20px + var(--safe-bot)); left: 50%;
     transform: translateX(-50%) translateY(80px);
     background: var(--surface2); border: 1px solid var(--border);
@@ -484,153 +484,92 @@ function preprocessImage(file) {
   });
 }
 
-// ── KI Analyse (gleiche Logik wie Kassenbuch) ──────────────────────────────
-const GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-latest',
-  'gemini-1.5-flash-8b'
-];
+// ── KI Analyse (1:1 aus Kassenbuch) ──────────────────────────────────────
+const GEMINI_KEY = cfg.gemini;
+const GEMINI_MODELS = ['gemini-2.5-flash','gemini-2.5-flash-preview-05-20','gemini-3.0-flash','gemini-2.0-flash','gemini-1.5-flash'];
 
 $analyseBtn.addEventListener('click', async () => {
   if (!state.pages.length) { showToast('Keine Seiten vorhanden', 'error'); return; }
-  if (!cfg.gemini) { showToast('Bitte zuerst Gemini API-Key hinterlegen', 'error'); document.getElementById('settings-btn').click(); return; }
+  const key = cfg.gemini;
+  if (!key) { showToast('Bitte zuerst Gemini API-Key hinterlegen', 'error'); document.getElementById('settings-btn').click(); return; }
 
   $analyseBtn.disabled = true;
   document.getElementById('analyse-icon').innerHTML = '<div class="spinner"></div>';
   document.getElementById('analyse-label').textContent = 'Analyse läuft…';
 
+  const prompt = `Analysiere dieses Dokument. Antworte NUR mit JSON, kein anderer Text:
+{"datum":"YYYY-MM-DD","dc":"high","absender":"Absendername","sc":"high","beschreibung":"Kurze Beschreibung","bc":"high"}`;
+
+  const imageParts = state.pages.slice(0, 3).map(p => ({
+    inlineData: { mimeType: 'image/jpeg', data: p.dataUrl.split(',')[1] }
+  }));
+
   try {
-    const imageParts = state.pages.slice(0, 3).map(p => ({
-      inlineData: { mimeType: 'image/jpeg', data: p.dataUrl.split(',')[1] }
-    }));
-
-    const today = new Date();
-    const todayStr = `${String(today.getDate()).padStart(2,'0')}.${String(today.getMonth()+1).padStart(2,'0')}.${today.getFullYear()}`;
-
-    const prompt = `Analysiere dieses Dokument-Foto und extrahiere die Daten als JSON. Heute ist ${todayStr}.
-
-Antworte NUR mit diesem JSON, ohne Markdown, ohne Erklaerung:
-{"day":"02","month":"07","year":"26","sender":"Mobiliar","desc":"Betriebsversicherung","confidence":{"day":0.9,"month":0.9,"year":0.9,"sender":0.9,"desc":0.8}}
-
-Regeln:
-- day/month: immer 2-stellig
-- year: 2-stellig (z.B. 26 fuer 2026)
-- sender: Firmen- oder Personenname, kurz, keine Sonderzeichen
-- desc: 1-2 Woerter was das Dokument ist (z.B. Mietvertrag, Lohnausweis, Rechnung)
-- Falls Datum nicht erkennbar: heutiges Datum nutzen
-- confidence: 0.0 bis 1.0`;
-
-    const reqBody = {
-      contents: [{ parts: [...imageParts, { text: prompt }] }],
-      generationConfig: { temperature: 0.0, maxOutputTokens: 300 }
-    };
-
-    // Multi-Modell-Fallback: probiert der Reihe nach bis eines antwortet
-    let respData = null;
-    let lastStatus = '';
-    let lastError = '';
+    let resp = null;
     for (const model of GEMINI_MODELS) {
       try {
         const r = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${cfg.gemini}`,
-          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(reqBody) }
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [...imageParts, { text: prompt }] }],
+              generationConfig: { temperature: 0.0, maxOutputTokens: 2048 }
+            })
+          }
         );
-        if (r.ok) { respData = await r.json(); console.log('Gemini OK:', model); break; }
-        lastStatus = r.status;
-        const errBody = await r.json().catch(() => ({}));
-        lastError = errBody?.error?.message || '';
-        console.warn('Gemini', model, r.status, lastError);
-      } catch(e) {
-        lastError = e.message;
-        console.warn('Gemini', model, e.message);
+        if (r.ok) { resp = r; console.log('Gemini OK:', model); break; }
+        console.warn('Gemini', model, r.status);
+      } catch(e) { console.warn('Gemini', model, e.message); }
+    }
+
+    if (!resp) throw new Error('Kein Gemini-Modell verfügbar');
+
+    const data = await resp.json();
+    console.log('Gemini raw:', JSON.stringify(data));
+    const txt = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    console.log('Gemini text:', txt);
+    if (!txt) throw new Error('Leere Antwort von Gemini');
+
+    const match = txt.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('Kein JSON in Antwort');
+    const parsed = JSON.parse(match[0]);
+
+    // Datum aufsplitten (YYYY-MM-DD → day/month/year)
+    if (parsed.datum) {
+      const parts = parsed.datum.split('-');
+      if (parts.length === 3) {
+        fields.year.value  = parts[0].slice(-2);
+        fields.month.value = parts[1].padStart(2,'0');
+        fields.day.value   = parts[2].padStart(2,'0');
       }
     }
+    if (parsed.absender)     fields.sender.value = parsed.absender;
+    if (parsed.beschreibung) fields.desc.value   = parsed.beschreibung;
 
-    if (!respData) {
-      const hint = lastStatus === 400 ? 'Ungültige Anfrage (400)' :
-                   lastStatus === 401 || lastStatus === 403 ? 'API-Key ungültig oder abgelaufen' :
-                   lastStatus === 429 ? 'Zu viele Anfragen — kurz warten' :
-                   lastStatus === 503 ? 'Gemini überlastet — nochmals versuchen' :
-                   lastError || `HTTP ${lastStatus}`;
-      throw new Error(hint);
-    }
-
-    const raw = respData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    console.log('Gemini raw:', raw);
-
-    // Bereinigen: Markdown-Fences entfernen
-    let clean = raw.replace(/```json|```/gi, '').trim();
-
-    // Gieriger Match: nimmt grösstes { ... } — wichtig für verschachtelte JSON (confidence)
-    const jsonMatch = clean.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      // Gemini hat freitext geantwortet — Felder per Regex direkt aus dem Text extrahieren
-      console.warn('Kein JSON-Block, versuche Freitext-Extraktion. Raw:', clean);
-      const rxFree = (patterns) => {
-        for (const p of patterns) {
-          const m = clean.match(p);
-          if (m && m[1]) return m[1].trim();
-        }
-        return '';
-      };
-      const today2 = new Date();
-      const parsed2 = {
-        day:    rxFree([/\bTag[:\s]+(\d{1,2})\b/i, /\b(\d{1,2})\.\d{1,2}\.\d{2,4}/]) || String(today2.getDate()).padStart(2,'0'),
-        month:  rxFree([/\bMonat[:\s]+(\d{1,2})\b/i, /\b\d{1,2}\.(\d{1,2})\.\d{2,4}/]) || String(today2.getMonth()+1).padStart(2,'0'),
-        year:   rxFree([/\bJahr[:\s]+(\d{2,4})\b/i, /\b\d{1,2}\.\d{1,2}\.(\d{2,4})/]) || String(today2.getFullYear()).slice(-2),
-        sender: rxFree([/\bAbsender[:\s]+([^\n,]+)/i, /\bFirma[:\s]+([^\n,]+)/i, /\bVon[:\s]+([^\n,]+)/i]),
-        desc:   rxFree([/\bBeschreibung[:\s]+([^\n,]+)/i, /\bDokument(?:typ)?[:\s]+([^\n,]+)/i, /\bBetreff[:\s]+([^\n,]+)/i]),
-        confidence: {}
-      };
-      if (parsed2.day)    fields.day.value    = String(parsed2.day).padStart(2,'0');
-      if (parsed2.month)  fields.month.value  = String(parsed2.month).padStart(2,'0');
-      if (parsed2.year)   fields.year.value   = String(parsed2.year).slice(-2);
-      if (parsed2.sender) fields.sender.value = parsed2.sender.trim();
-      if (parsed2.desc)   fields.desc.value   = parsed2.desc.trim();
-      updateFilename();
-      showToast('Felder prüfen — manuell ergänzen falls nötig', 'info');
-      return;
-    }
-
-    clean = jsonMatch[0].replace(/[\x00-\x1F\x7F]/g, ' ');
-
-    let parsed;
-    try {
-      parsed = JSON.parse(clean);
-    } catch(e) {
-      // JSON kaputt: einzelne Felder per Regex extrahieren
-      const rx = k => { const m = clean.match(new RegExp('"' + k + '"\\s*:\\s*"([^"]*?)"')); return m ? m[1].trim() : ''; };
-      parsed = { day: rx('day'), month: rx('month'), year: rx('year'), sender: rx('sender'), desc: rx('desc'), confidence: {} };
-    }
-
-    if (parsed.day)    fields.day.value    = String(parsed.day).padStart(2,'0');
-    if (parsed.month)  fields.month.value  = String(parsed.month).padStart(2,'0');
-    if (parsed.year)   fields.year.value   = String(parsed.year).slice(-2);
-    if (parsed.sender) fields.sender.value = parsed.sender;
-    if (parsed.desc)   fields.desc.value   = parsed.desc;
-
-    const conf = parsed.confidence || {};
-    setBadge(badges.day,    conf.day);
-    setBadge(badges.month,  conf.month);
-    setBadge(badges.year,   conf.year);
-    setBadge(badges.sender, conf.sender);
-    setBadge(badges.desc,   conf.desc);
+    // Konfidenz-Badges (high/medium/low wie im Kassenbuch)
+    const confToNum = c => c === 'high' ? 0.9 : c === 'medium' ? 0.65 : 0.3;
+    setBadge(badges.day,    confToNum(parsed.dc));
+    setBadge(badges.month,  confToNum(parsed.dc));
+    setBadge(badges.year,   confToNum(parsed.dc));
+    setBadge(badges.sender, confToNum(parsed.sc));
+    setBadge(badges.desc,   confToNum(parsed.bc));
 
     updateFilename();
-    const found = [parsed.sender, parsed.desc].filter(Boolean).join(' · ');
-    showToast(found ? `✓ ${found}` : 'Analyse fertig — Felder pruefen', 'success');
+    const found = [parsed.absender, parsed.beschreibung].filter(Boolean).join(' · ');
+    showToast(found ? `✓ ${found}` : 'Analyse fertig', 'success');
 
-  } catch(err) {
-    console.error(err);
-    showToast('KI Fehler: ' + err.message, 'error', 5000);
+  } catch(e) {
+    console.error('KI Fehler:', e);
+    showToast('KI Fehler: ' + e.message, 'error', 6000);
   } finally {
     $analyseBtn.disabled = false;
     document.getElementById('analyse-icon').textContent = '✨';
     document.getElementById('analyse-label').textContent = 'KI-Analyse wiederholen';
   }
 });
+
 
 // ── PDF erstellen ──────────────────────────────────────────────────────────
 async function buildPdf() {
