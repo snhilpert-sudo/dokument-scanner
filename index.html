@@ -191,8 +191,8 @@
   .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
   .action-btn:not(:disabled):active { opacity: 0.75; }
 
-  #pdf-btn { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
-  #onedrive-btn { background: #0078d4; color: #fff; }
+  #pdf-btn    { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  #share-btn  { background: var(--amber); color: #000; }
 
   /* ── Reset btn ── */
   #reset-btn {
@@ -240,7 +240,7 @@
 
   <header>
     <h1>📄 Dokument Scanner</h1>
-    <p>Fotografieren → KI erkennt → PDF in OneDrive</p>
+    <p>Fotografieren → KI erkennt → PDF teilen</p>
     <button id="settings-btn" aria-label="Einstellungen">⚙️</button>
   </header>
 
@@ -251,14 +251,6 @@
       <div class="setting-row">
         <label>Gemini API-Key</label>
         <input type="password" id="cfg-gemini" placeholder="AIza…">
-      </div>
-      <div class="setting-row">
-        <label>OneDrive-Ordner (Pfad)</label>
-        <input type="text" id="cfg-folder" placeholder="Dokumente/Scans">
-      </div>
-      <div class="setting-row">
-        <label>Microsoft Client-ID (Azure App)</label>
-        <input type="text" id="cfg-clientid" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
       </div>
       <button id="save-settings">Speichern</button>
       <button id="close-settings">Abbrechen</button>
@@ -325,8 +317,8 @@
 
     <!-- Actions -->
     <div id="action-row" style="display:none">
-      <button class="action-btn" id="pdf-btn">⬇ PDF laden</button>
-      <button class="action-btn" id="onedrive-btn">☁ OneDrive</button>
+      <button class="action-btn" id="pdf-btn">⬇ Herunterladen</button>
+      <button class="action-btn" id="share-btn">↗ Teilen</button>
     </div>
     <button id="reset-btn" style="display:none">↺ Neu starten</button>
 
@@ -346,12 +338,8 @@ const state = {
 
 // ── Config (localStorage) ──────────────────────────────────────────────────
 const cfg = {
-  get gemini()   { return localStorage.getItem('ds_gemini') || ''; },
-  get folder()   { return localStorage.getItem('ds_folder') || 'Dokumente/Scans'; },
-  get clientId() { return localStorage.getItem('ds_clientid') || ''; },
-  set gemini(v)  { localStorage.setItem('ds_gemini', v); },
-  set folder(v)  { localStorage.setItem('ds_folder', v); },
-  set clientId(v){ localStorage.setItem('ds_clientid', v); }
+  get gemini() { return localStorage.getItem('ds_gemini') || ''; },
+  set gemini(v){ localStorage.setItem('ds_gemini', v); }
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
@@ -600,93 +588,43 @@ document.getElementById('pdf-btn').addEventListener('click', async () => {
   }
 });
 
-// ── OneDrive Upload via MSAL implicit / token ──────────────────────────────
-let msToken = null;
-
-async function getMsToken() {
-  if (msToken) return msToken;
-  const clientId = cfg.clientId;
-  if (!clientId) throw new Error('Microsoft Client-ID fehlt in Einstellungen');
-
-  const redirectUri = encodeURIComponent(location.href.split('?')[0].split('#')[0]);
-  const scope = encodeURIComponent('Files.ReadWrite offline_access');
-  const authUrl = `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?client_id=${clientId}&response_type=token&redirect_uri=${redirectUri}&scope=${scope}&response_mode=fragment`;
-
-  // Check if we already have a token in the URL hash (redirect return)
-  const hash = new URLSearchParams(location.hash.slice(1));
-  if (hash.get('access_token')) {
-    msToken = hash.get('access_token');
-    history.replaceState(null, '', location.pathname);
-    return msToken;
-  }
-
-  // Open popup for auth
-  return new Promise((resolve, reject) => {
-    const popup = window.open(authUrl, 'ms-auth', 'width=480,height=640');
-    if (!popup) { reject(new Error('Popup wurde blockiert. Bitte Popup-Blocker deaktivieren.')); return; }
-
-    const timer = setInterval(() => {
-      try {
-        const popHash = new URLSearchParams(popup.location.hash.slice(1));
-        const token = popHash.get('access_token');
-        if (token) {
-          clearInterval(timer);
-          popup.close();
-          msToken = token;
-          resolve(token);
-        }
-      } catch(e) { /* cross-origin, warten */ }
-      if (popup.closed) { clearInterval(timer); reject(new Error('Login abgebrochen')); }
-    }, 500);
-  });
-}
-
-document.getElementById('onedrive-btn').addEventListener('click', async () => {
+// ── Teilen via Web Share API ───────────────────────────────────────────────
+document.getElementById('share-btn').addEventListener('click', async () => {
   if (!state.pages.length) { showToast('Keine Seiten vorhanden', 'error'); return; }
-  const btn = document.getElementById('onedrive-btn');
+  const btn = document.getElementById('share-btn');
   btn.disabled = true;
-  btn.innerHTML = '<div class="spinner" style="border-color:#fff;border-top-color:transparent"></div> Verbinde…';
+  btn.innerHTML = '<div class="spinner" style="border-color:#000;border-top-color:transparent"></div>';
 
   try {
-    const token = await getMsToken();
-    showToast('Erstelle PDF…', 'info', 30000);
-    btn.innerHTML = '<div class="spinner" style="border-color:#fff;border-top-color:transparent"></div> PDF…';
-
     const pdf = await buildPdf();
-    const pdfBlob = pdf.output('blob');
-
     const filename = getFilename();
-    const folder = cfg.folder.replace(/^\/|\/$/g,'');
-    const uploadPath = folder ? `${folder}/${filename}` : filename;
+    const pdfBlob = pdf.output('blob');
+    const file = new File([pdfBlob], filename, { type: 'application/pdf' });
 
-    showToast('Lade hoch…', 'info', 30000);
-    btn.innerHTML = '<div class="spinner" style="border-color:#fff;border-top-color:transparent"></div> Hochladen…';
-
-    const uploadUrl = `https://graph.microsoft.com/v1.0/me/drive/root:/${uploadPath}:/content`;
-    const upRes = await fetch(uploadUrl, {
-      method: 'PUT',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/pdf'
-      },
-      body: pdfBlob
-    });
-
-    if (!upRes.ok) {
-      const errData = await upRes.json().catch(() => ({}));
-      throw new Error(errData?.error?.message || `HTTP ${upRes.status}`);
+    // Web Share API Level 2 (Datei teilen) — unterstützt auf iOS Safari & Android Chrome
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        files: [file],
+        title: filename.replace('.pdf',''),
+      });
+      showToast('Geteilt ✓', 'success');
+    } else {
+      // Fallback: direkt herunterladen
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 5000);
+      showToast('PDF gespeichert (Teilen nicht verfügbar)', 'info');
     }
-
-    const result = await upRes.json();
-    showToast(`✓ Gespeichert: ${filename}`, 'success', 5000);
-
   } catch(e) {
-    console.error(e);
-    if (e.message.includes('401') || e.message.includes('token')) msToken = null;
-    showToast('Fehler: ' + e.message, 'error', 6000);
+    if (e.name === 'AbortError') {
+      showToast('Teilen abgebrochen', '');
+    } else {
+      showToast('Fehler: ' + e.message, 'error');
+    }
   } finally {
     btn.disabled = false;
-    btn.textContent = '☁ OneDrive';
+    btn.textContent = '↗ Teilen';
   }
 });
 
@@ -704,17 +642,13 @@ $resetBtn.addEventListener('click', () => {
 // ── Settings ───────────────────────────────────────────────────────────────
 const $overlay = document.getElementById('settings-overlay');
 document.getElementById('settings-btn').addEventListener('click', () => {
-  document.getElementById('cfg-gemini').value   = cfg.gemini;
-  document.getElementById('cfg-folder').value   = cfg.folder;
-  document.getElementById('cfg-clientid').value = cfg.clientId;
+  document.getElementById('cfg-gemini').value = cfg.gemini;
   $overlay.classList.add('open');
 });
 document.getElementById('close-settings').addEventListener('click', () => $overlay.classList.remove('open'));
 $overlay.addEventListener('click', e => { if (e.target === $overlay) $overlay.classList.remove('open'); });
 document.getElementById('save-settings').addEventListener('click', () => {
-  cfg.gemini   = document.getElementById('cfg-gemini').value.trim();
-  cfg.folder   = document.getElementById('cfg-folder').value.trim();
-  cfg.clientId = document.getElementById('cfg-clientid').value.trim();
+  cfg.gemini = document.getElementById('cfg-gemini').value.trim();
   $overlay.classList.remove('open');
   showToast('Einstellungen gespeichert ✓', 'success');
 });
