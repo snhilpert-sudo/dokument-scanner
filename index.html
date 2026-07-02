@@ -545,15 +545,47 @@ Regeln:
     const raw = respData?.candidates?.[0]?.content?.parts?.[0]?.text || '';
     console.log('Gemini raw:', raw);
 
+    // Bereinigen: Markdown-Fences entfernen
     let clean = raw.replace(/```json|```/gi, '').trim();
-    const jsonMatch = clean.match(/\{[\s\S]*?\}/);
-    if (!jsonMatch) throw new Error('Kein JSON in Antwort gefunden');
+
+    // Gieriger Match: nimmt grösstes { ... } — wichtig für verschachtelte JSON (confidence)
+    const jsonMatch = clean.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      // Gemini hat freitext geantwortet — Felder per Regex direkt aus dem Text extrahieren
+      console.warn('Kein JSON-Block, versuche Freitext-Extraktion. Raw:', clean);
+      const rxFree = (patterns) => {
+        for (const p of patterns) {
+          const m = clean.match(p);
+          if (m && m[1]) return m[1].trim();
+        }
+        return '';
+      };
+      const today2 = new Date();
+      const parsed2 = {
+        day:    rxFree([/\bTag[:\s]+(\d{1,2})\b/i, /\b(\d{1,2})\.\d{1,2}\.\d{2,4}/]) || String(today2.getDate()).padStart(2,'0'),
+        month:  rxFree([/\bMonat[:\s]+(\d{1,2})\b/i, /\b\d{1,2}\.(\d{1,2})\.\d{2,4}/]) || String(today2.getMonth()+1).padStart(2,'0'),
+        year:   rxFree([/\bJahr[:\s]+(\d{2,4})\b/i, /\b\d{1,2}\.\d{1,2}\.(\d{2,4})/]) || String(today2.getFullYear()).slice(-2),
+        sender: rxFree([/\bAbsender[:\s]+([^\n,]+)/i, /\bFirma[:\s]+([^\n,]+)/i, /\bVon[:\s]+([^\n,]+)/i]),
+        desc:   rxFree([/\bBeschreibung[:\s]+([^\n,]+)/i, /\bDokument(?:typ)?[:\s]+([^\n,]+)/i, /\bBetreff[:\s]+([^\n,]+)/i]),
+        confidence: {}
+      };
+      if (parsed2.day)    fields.day.value    = String(parsed2.day).padStart(2,'0');
+      if (parsed2.month)  fields.month.value  = String(parsed2.month).padStart(2,'0');
+      if (parsed2.year)   fields.year.value   = String(parsed2.year).slice(-2);
+      if (parsed2.sender) fields.sender.value = parsed2.sender.trim();
+      if (parsed2.desc)   fields.desc.value   = parsed2.desc.trim();
+      updateFilename();
+      showToast('Felder prüfen — manuell ergänzen falls nötig', 'info');
+      return;
+    }
+
     clean = jsonMatch[0].replace(/[\x00-\x1F\x7F]/g, ' ');
 
     let parsed;
     try {
       parsed = JSON.parse(clean);
     } catch(e) {
+      // JSON kaputt: einzelne Felder per Regex extrahieren
       const rx = k => { const m = clean.match(new RegExp('"' + k + '"\\s*:\\s*"([^"]*?)"')); return m ? m[1].trim() : ''; };
       parsed = { day: rx('day'), month: rx('month'), year: rx('year'), sender: rx('sender'), desc: rx('desc'), confidence: {} };
     }
