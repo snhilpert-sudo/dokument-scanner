@@ -233,6 +233,25 @@
 
   /* Hidden file input */
   #file-input { display: none; }
+
+  /* ── Zuschnitt-Editor (Scanic) ── */
+  #crop-overlay {
+    display: none; position: fixed; inset: 0; z-index: 150;
+    background: #000; flex-direction: column;
+  }
+  #crop-overlay.open { display: flex; }
+  #crop-topbar {
+    padding: calc(var(--safe-top) + 14px) 16px 14px;
+    color: var(--text); font-size: 15px; font-weight: 600;
+    text-align: center; background: var(--bg); border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  #crop-topbar span { display: block; }
+  #crop-topbar small { display: block; font-size: 12px; font-weight: 400; color: var(--muted); margin-top: 2px; }
+  #crop-host {
+    flex: 1; position: relative; overflow: hidden;
+    padding-bottom: var(--safe-bot);
+  }
 </style>
 </head>
 <body>
@@ -313,6 +332,16 @@
 </div><!-- /app -->
 
 <input type="file" id="file-input" accept="image/*" capture="environment" multiple>
+
+<!-- Zuschnitt-Editor: erscheint nach jedem Foto, Ecken sind per Finger verschiebbar -->
+<div id="crop-overlay">
+  <div id="crop-topbar">
+    <span>Ecken anpassen</span>
+    <small>Ziehe die Punkte auf die Ränder des Dokuments</small>
+  </div>
+  <div id="crop-host"></div>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -330,6 +359,14 @@ const SUPABASE_URL = 'https://zomsdllwwsbhjldtbhpq.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvbXNkbGx3d3NiaGpsZHRiaHBxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0OTc5NDIsImV4cCI6MjA5NjA3Mzk0Mn0.ejRZd1bpNP_EGapARgps7r9DUeJzeuK5yW5m_k640b4';
 const GEMINI_PROXY_URL = SUPABASE_URL + '/functions/v1/gemini-proxy';
 
+// ── Scanic (automatischer Rand-/Ecken-Zuschnitt) ─────────────────────────────
+// Wird im Hintergrund geladen, sobald die Seite fertig ist, damit beim ersten
+// Foto keine zusätzliche Wartezeit durch den Bibliotheks-Download entsteht.
+// Version bewusst fixiert (1.6.0), damit ein zukünftiges Update der Bibliothek
+// nicht ungefragt das Verhalten dieser Seite verändert.
+const scanicReady = import('https://cdn.jsdelivr.net/npm/scanic@1.6.0/dist/scanic.js')
+  .catch(e => { console.warn('Scanic konnte nicht geladen werden — Zuschnitt wird übersprungen:', e); return null; });
+
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const $grid      = document.getElementById('pages-grid');
 const $addBtn    = document.getElementById('add-page-btn');
@@ -342,6 +379,8 @@ const $pageCount = document.getElementById('page-count');
 const $analyseBtn= document.getElementById('analyse-btn');
 const $toast     = document.getElementById('toast');
 const $filenameOut = document.getElementById('filename-out');
+const $cropOverlay = document.getElementById('crop-overlay');
+const $cropHost    = document.getElementById('crop-host');
 
 // Field inputs
 const fields = {
@@ -436,7 +475,9 @@ $fileInput.addEventListener('change', async e => {
   const files = Array.from(e.target.files);
   if (!files.length) return;
   for (const file of files) {
-    const dataUrl = await preprocessImage(file);
+    const img = await fileToImage(file);
+    const cropped = await cropInteractive(img); // Canvas (zugeschnitten) oder null (Original übernehmen)
+    const dataUrl = resizeAndEnhance(cropped || img);
     state.pages.push({ dataUrl });
   }
   $fileInput.value = '';
@@ -444,31 +485,80 @@ $fileInput.addEventListener('change', async e => {
   showToast(`${files.length} Seite(n) hinzugefügt`, 'success');
 });
 
-// Bild aufbereiten: max 1600px, Kontrast erhöhen — gleich wie Kassenbuch
-function preprocessImage(file) {
+// Datei -> geladenes <img> (für Zuschnitt-Erkennung und Weiterverarbeitung)
+function fileToImage(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = reject;
     reader.onload = ev => {
       const img = new Image();
       img.onerror = reject;
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const maxDim = 1600;
-        let w = img.width, h = img.height;
-        if (w > maxDim || h > maxDim) {
-          if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
-          else { w = Math.round(w * maxDim / h); h = maxDim; }
-        }
-        canvas.width = w; canvas.height = h;
-        const ctx = canvas.getContext('2d');
-        ctx.filter = 'contrast(1.15) brightness(1.05)';
-        ctx.drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/jpeg', 0.92));
-      };
+      img.onload = () => resolve(img);
       img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
+  });
+}
+
+// Bild aufbereiten: max 1600px, Kontrast erhöhen — gleich wie Kassenbuch.
+// Akzeptiert sowohl ein <img> (unbeschnitten) als auch ein <canvas> (bereits
+// per Zuschnitt-Editor entzerrt/zugeschnitten).
+function resizeAndEnhance(source) {
+  const canvas = document.createElement('canvas');
+  const maxDim = 1600;
+  let w = source.naturalWidth || source.width, h = source.naturalHeight || source.height;
+  if (w > maxDim || h > maxDim) {
+    if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+    else { w = Math.round(w * maxDim / h); h = maxDim; }
+  }
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.filter = 'contrast(1.15) brightness(1.05)';
+  ctx.drawImage(source, 0, 0, w, h);
+  return canvas.toDataURL('image/jpeg', 0.92);
+}
+
+// Zuschnitt-Editor: erkennt die Dokumentkanten automatisch, zeigt sie zum
+// Nachjustieren an und liefert nach Bestätigung das zugeschnittene Bild.
+// Gibt null zurück, wenn der Nutzer abbricht oder die Bibliothek/Erkennung
+// nicht funktioniert — dann wird einfach das Originalfoto unbeschnitten
+// weiterverwendet, die App bleibt also in jedem Fall benutzbar.
+function cropInteractive(img) {
+  return new Promise(async resolve => {
+    const scanic = await scanicReady;
+    if (!scanic) { resolve(null); return; }
+
+    let corners = null;
+    try {
+      const detection = await scanic.scanDocument(img, { mode: 'detect' });
+      if (detection.success && detection.corners) corners = detection.corners;
+    } catch (e) { console.warn('Kantenerkennung fehlgeschlagen:', e); }
+
+    $cropOverlay.classList.add('open');
+    $cropHost.innerHTML = '';
+
+    let editor;
+    const finish = out => {
+      editor.destroy();
+      $cropOverlay.classList.remove('open');
+      resolve(out);
+    };
+
+    editor = scanic.createCornerEditor({
+      container: $cropHost,
+      image: img,
+      corners: corners || undefined,
+      onConfirm: async finalCorners => {
+        try {
+          const extracted = await scanic.extractDocument(img, finalCorners, { output: 'canvas' });
+          finish(extracted.success ? extracted.output : null);
+        } catch (e) {
+          console.warn('Zuschnitt fehlgeschlagen, verwende Original:', e);
+          finish(null);
+        }
+      },
+      onCancel: () => finish(null)
+    });
   });
 }
 
