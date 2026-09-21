@@ -675,11 +675,12 @@ async function buildPdf() {
       img.onload = res; img.onerror = rej;
       img.src = state.pages[i].dataUrl;
     });
-    // Bild so skalieren, dass es die A4-Seite komplett ausfüllt (kein weisser
-    // Rand mehr) — Seitenverhältnis bleibt erhalten, minimaler Überstand wird
-    // mittig über den Seitenrand hinaus platziert und dort automatisch
-    // abgeschnitten, da PDF-Seiten am Seitenrand grundsätzlich beschneiden.
-    const ratio = Math.max(W / img.naturalWidth, H / img.naturalHeight);
+    // Scale to fit A4 preserving aspect ratio (bewusst "einpassend" statt
+    // "ausfüllend": ein "ausfüllender" Zuschnitt hat bei ungünstigem
+    // Seitenverhältnis (z.B. schiefes Foto) Teile des Dokumentrands
+    // abgeschnitten — der weisse Rand ist der sichere Kompromiss, damit nie
+    // Inhalt verloren geht.
+    const ratio = Math.min(W / img.naturalWidth, H / img.naturalHeight);
     const w = img.naturalWidth * ratio;
     const h = img.naturalHeight * ratio;
     const x = (W - w) / 2;
