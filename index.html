@@ -477,8 +477,10 @@ function preprocessImage(file) {
 // Hinweis: Google sperrt die älteren 2.x/1.5-Modelle mittlerweile für neu
 // erstellte API-Keys (nur Keys mit bestehender Nutzungshistorie dürfen sie
 // noch aufrufen) — daher hier die aktuelle Modell-Generation, die mit dem
-// neuen Scan-Key funktioniert.
-const GEMINI_MODELS = ['gemini-3.8-flash','gemini-3.6-flash','gemini-3.5-flash','gemini-3.5-flash-lite','gemini-3.1-flash-lite'];
+// neuen Scan-Key funktioniert. Die "Flash-Lite"-Modelle zuerst, da sie für
+// diese einfache Beleg-Auslesung völlig ausreichen und deutlich schneller
+// antworten als die grösseren Flash-Modelle (Fallback nur bei Fehler).
+const GEMINI_MODELS = ['gemini-3.5-flash-lite','gemini-3.1-flash-lite','gemini-3.5-flash','gemini-3.6-flash','gemini-3.8-flash'];
 
 $analyseBtn.addEventListener('click', async () => {
   if (!state.pages.length) { showToast('Keine Seiten vorhanden', 'error'); return; }
@@ -511,7 +513,10 @@ $analyseBtn.addEventListener('click', async () => {
             body: JSON.stringify({
               model,
               contents: [{ parts: [...imageParts, { text: prompt }] }],
-              generationConfig: { temperature: 0.0, maxOutputTokens: 2048 }
+              // thinkingLevel 'low' spart bei diesem simplen Auslese-Task viel
+              // Zeit — die Gemini-3.x-Modelle "denken" sonst standardmässig
+              // deutlich länger nach, was die 30-60s Wartezeit erklärt hat.
+              generationConfig: { temperature: 0.0, maxOutputTokens: 2048, thinkingConfig: { thinkingLevel: 'low' } }
             })
           }
         );
