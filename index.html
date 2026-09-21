@@ -241,21 +241,7 @@
   <header>
     <h1>📄 Dokument Scanner</h1>
     <p>Fotografieren → KI erkennt → PDF teilen</p>
-    <button id="settings-btn" aria-label="Einstellungen">⚙️</button>
   </header>
-
-  <!-- Settings overlay -->
-  <div id="settings-overlay" role="dialog" aria-modal="true" aria-label="Einstellungen">
-    <div id="settings-sheet">
-      <h2>⚙️ Einstellungen</h2>
-      <div class="setting-row">
-        <label>Gemini API-Key</label>
-        <input type="password" id="cfg-gemini" placeholder="AIza…">
-      </div>
-      <button id="save-settings">Speichern</button>
-      <button id="close-settings">Abbrechen</button>
-    </div>
-  </div>
 
   <div id="main">
 
@@ -336,11 +322,13 @@ const state = {
   fields: { day:'', month:'', year:'', sender:'', desc:'' }
 };
 
-// ── Config (localStorage) ──────────────────────────────────────────────────
-const cfg = {
-  get gemini() { return localStorage.getItem('ds_gemini') || ''; },
-  set gemini(v){ localStorage.setItem('ds_gemini', v); }
-};
+// ── Config ────────────────────────────────────────────────────────────────
+// Der Gemini-Key liegt NICHT mehr hier (auch nicht im localStorage) — er ist
+// als Secret in derselben Supabase Edge Function "gemini-proxy" hinterlegt,
+// die auch das Kassenbuch nutzt. Beide Apps teilen sich diesen einen sicheren Zugang.
+const SUPABASE_URL = 'https://zomsdllwwsbhjldtbhpq.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpvbXNkbGx3d3NiaGpsZHRiaHBxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0OTc5NDIsImV4cCI6MjA5NjA3Mzk0Mn0.ejRZd1bpNP_EGapARgps7r9DUeJzeuK5yW5m_k640b4';
+const GEMINI_PROXY_URL = SUPABASE_URL + '/functions/v1/gemini-proxy';
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const $grid      = document.getElementById('pages-grid');
@@ -490,8 +478,6 @@ const GEMINI_MODELS = ['gemini-2.5-flash','gemini-2.5-flash-preview-05-20','gemi
 
 $analyseBtn.addEventListener('click', async () => {
   if (!state.pages.length) { showToast('Keine Seiten vorhanden', 'error'); return; }
-  const key = cfg.gemini || 'AQ.Ab8RN6LFIw6EYLkjKTjfB_yIbcZ1PuESrShD6oTyhQSQYvtmpw';
-  console.log('Key geladen:', key.slice(0,8) + '...');
   showToast('Verbinde mit Gemini…', 'info', 60000);
 
   $analyseBtn.disabled = true;
@@ -510,11 +496,16 @@ $analyseBtn.addEventListener('click', async () => {
     for (const model of GEMINI_MODELS) {
       try {
         const r = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`,
+          GEMINI_PROXY_URL,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${SUPABASE_KEY}`,
+              'apikey': SUPABASE_KEY
+            },
             body: JSON.stringify({
+              model,
               contents: [{ parts: [...imageParts, { text: prompt }] }],
               generationConfig: { temperature: 0.0, maxOutputTokens: 2048 }
             })
@@ -664,20 +655,6 @@ $resetBtn.addEventListener('click', () => {
   updateFilename();
   renderPages();
   showToast('Zurückgesetzt', '');
-});
-
-// ── Settings ───────────────────────────────────────────────────────────────
-const $overlay = document.getElementById('settings-overlay');
-document.getElementById('settings-btn').addEventListener('click', () => {
-  document.getElementById('cfg-gemini').value = cfg.gemini;
-  $overlay.classList.add('open');
-});
-document.getElementById('close-settings').addEventListener('click', () => $overlay.classList.remove('open'));
-$overlay.addEventListener('click', e => { if (e.target === $overlay) $overlay.classList.remove('open'); });
-document.getElementById('save-settings').addEventListener('click', () => {
-  cfg.gemini = document.getElementById('cfg-gemini').value.trim();
-  $overlay.classList.remove('open');
-  showToast('Einstellungen gespeichert ✓', 'success');
 });
 
 // ── Service Worker ─────────────────────────────────────────────────────────
